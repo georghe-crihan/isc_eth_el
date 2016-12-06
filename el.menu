@@ -1,0 +1,233 @@
+#help#  
+#help#  Selecting this menu item will configure the
+#help#  AMD PCNET (AM9) Board into the system
+#menu#  AMD PCNET (AM9) Board
+
+#ident	"@(#)ec	2.10	90/01/31"
+
+#  The following is an installation script for use with System V, Release 3
+#  using either linkable or installable device drivers.
+#  
+#  This script does the following:
+#    -- Finds the current major numbers and driver configuration parameters.
+#    -- Asks the user if the major numbers need changing.
+#    -- If yes, it prompts for new major numbers and modifies the driver
+#       config files as appropriate.
+#    -- Asks the user if the driver configuration parameters needs changing.
+#    -- If the system requires any driver config parameters to be changed, it
+#       modifies the space.c and config file.
+#    -- Checks for conflicts on the interrupt vector set in the previous
+#       steps; if one is found then a bunch of instructions on how to
+#       proceed are written to the screen.
+#    -- Adds the driver(s) to the kernel configuration files.
+#    -- If necessary, changes netd.cf for the driver.
+#    -- Removes any existing special files and create the special files
+#       (devices) required by HBTCP.
+#    -- Calls kconfig to build a kernel if the user wants to.
+
+changed=no
+CONFDIR=/etc/conf
+CNFPACK=${CONFDIR}/pack.d
+SDEVICEDIR=${CONFDIR}/sdevice.d
+CFDDIR=${CONFDIR}/cf.d
+MDEVICE=${CFDDIR}/mdevice
+SDEVICE=${CFDDIR}/sdevice
+LOCNAME=`uname -n`
+NAME=AM9
+DNAME=el
+TEMPF=/tmp/$DNAME.$$
+TEMPSDEV=/tmp/sdev.$DNAME.$$
+VERSION=`uname -v`
+export CONFDIR CNFPACK NAME DNAME LOCNAME
+
+#   Set trap after variables defined
+trap "rm -f ${T1:-/tmp/il?.*} $T2 ${TEMPF} ${TEMPSDEV}; exit 3" 2 3 15
+flags="-qq -k$$"
+
+#  Stop right now if for some reason the file is not there.
+if [ ! -f ${SDEVICEDIR}/$DNAME ]
+then
+	echo "Cannot find configuration file ${SDEVICEDIR}/$DNAME, aborting."
+	exit 1
+fi
+cp ${SDEVICEDIR}/$DNAME ${TEMPSDEV}
+
+#	Get configurable values
+set `awk '/'$DNAME'/ { print $6, $7, $8 }' ${TEMPSDEV}`
+irqvec=$1; stioa=$2; endioa=$3
+
+#
+#  Offer the user a chance to change the interrupt vector line
+#
+cat <<EOF
+
+                          INTERACTIVE UNIX
+                Host Based TCP/IP Software Installation
+                   UNIX System V Release 3 Version
+
+
+
+                     $NAME Hardware Configuration
+
+The $DNAME driver is currently configured with the following $NAME hardware
+settings:
+
+	Interrupt Request Line (IRQ).... $irqvec
+	I/O Port Start address.......... 0x$stioa
+	I/O Port End address............ 0x$endioa
+
+EOF
+
+echo "Do you want to use the current IRQ value [ Yes ]? \c"
+read ans
+case "${ans:-Yes}" in
+     [nN]*)
+	  oirq=$irqvec; changed=yes; echo " "
+	  while true
+	       do echo "Please enter the IRQ value for the board [ $oirq ]: \c"
+	       read irqvecx; irqvec=${irqvecx:-$oirq}
+#	       case "$irqvec" in
+#		    [3-7]) break ;;
+#		    *)
+#			 echo "\nOnly 3 through 7 are valid \c"
+#			 echo "interrupt levels for the $NAME board." ;;
+#	       esac
+	  done
+	  awk '/'$DNAME'/ { OFS="\t"; $6="'$irqvec'" ; print $0 }' ${TEMPSDEV} > ${TEMPF}
+	  irqlev=$irqvec 
+	  mv ${TEMPF} ${TEMPSDEV}
+	  echo " "
+esac
+
+echo "Do you want to use the current I/O Port address range [ Yes ]? \c"
+read ans
+case "${ans:-Yes}" in
+     [nN]*)
+
+	  ostioa=$stioa; changed=yes; echo " "
+	  while true
+	       do echo "Please enter the Start I/O address for the board in hex [ $ostioa ]: \c"
+	       read newstioa; stioa=${newstioa:-$ostioa}
+	       case "$stioa" in
+		    [0-9a-fA-F]*) break ;;
+		    *) echo The I/O Base address must be specified in hexadecimal ;;
+	       esac
+	  done
+	  awk '/'$DNAME'/ { OFS="\t"; $7="'$stioa'" ; print $0 }' ${TEMPSDEV} > ${TEMPF}
+	  mv ${TEMPF} ${TEMPSDEV}
+
+	  oendioa=$endioa; changed=yes;
+	  while true
+	       do echo "Please enter the End I/O address for the board in hex [ $oendioa ]: \c"
+	       read newendioa; endioa=${newendioa:-$oendioa}
+	       case "$endioa" in
+		    [0-9a-fA-F]*) break ;;
+		    *) echo The End I/O address must be specified in hexadecimal ;;
+	       esac
+	  done
+	  awk '/'$DNAME'/ { OFS="\t"; $8="'$endioa'" ; print $0 }' ${TEMPSDEV} > ${TEMPF}
+	  mv ${TEMPF} ${TEMPSDEV}
+	  echo " "
+esac
+
+# 	Set the driver to be configured
+awk '/'$DNAME'/ { OFS="\t"; $2="Y" ; print $0 }' ${TEMPSDEV} > ${TEMPF}
+mv ${TEMPF} ${TEMPSDEV}
+
+#
+# check for conflicts in the interrupt vector
+#
+echo
+echo "Checking for interrupt vector conflicts - Please wait..."
+match=No > ${TEMPF}
+
+cat ${SDEVICEDIR}/* | awk '{  if ( $1 != "'$DNAME'" && $2 != "N" && $6 == "'$irqvec'" ) {
+		printf "matchdev=%s\n",$1
+		print "match=y"
+	}
+} ' >> ${TEMPF}
+
+chmod +x ${TEMPF}
+. ${TEMPF}
+rm -f ${TEMPF}
+
+    case "${match:-No}" in
+	[yY]*)
+		cat <<EOF
+
+There is a conflict with the device "$matchdev" on interrupt level
+$irqvec.  Please resolve this conflict by changing the Interrupt
+Request line of either the conflicting device or the $NAME board.
+
+Change the IRQ value of "$DNAME" in ${SDEVICEDIR}/$DNAME file or make
+modifications to the configuration file of each conflicting device
+resident in ${SDEVICEDIR} directory named after the corresponding
+device.  If you are changing the interrupt vector and request
+line of the $NAME board then you will need to do the following:
+
+     1    Abort this installation.
+     2    Change the IRQ jumper on the $NAME board to the desired IRQ
+	  level to reflect the desired IRQ level.
+     3    Restart this installation script by executing sysadm, giving
+	  the correct value for the interrupt level when asked by the
+	  script.
+
+This conflict must be resolved before the new kernel can be linked.
+Please refer to the INTERACTIVE UNIX TCP/IP software and $NAME hardware
+installation manual for more detailed instructions on changing the
+interrupt vector, I/O address and etc..
+
+Now interrupt this script (usually the DEL key) to abort the
+installation...
+EOF
+	read junk ;;
+    esac
+
+#  Set up real sdevice file
+mv ${TEMPSDEV} ${SDEVICEDIR}/$DNAME 
+echo "\nNew ${SDEVICEDIR}/$DNAME file is:"
+cat ${SDEVICEDIR}/$DNAME
+echo ""
+
+#
+#  Add driver to kernel description file and kernel configuration file
+#
+if fgrep "$NAME Ethernet Driver" /etc/conf/kconfig.d/description >/dev/null 2>&1
+then :
+	echo $NAME Ethernet Driver already in description file.
+else
+	cat >> /etc/conf/kconfig.d/description <<!
+el      -    -     hbtcp    -             AMD PCNET AM9 Ethernet Driver
+llc     -    -     hbtcp    -             Link level protocol pseudo driver
+!
+fi
+
+#
+#  remove any HBTCP special files that currently exist and recreate them
+#	(devices removed in case of reinstallation to change major numbers)
+#
+#  This is doen by idmknod each time a new kernel is built and
+#  installed.  A new new kernel environment is created by idmknod.
+#
+
+#
+#  change /etc/netd.cf to use DNAME
+#  set the hostname in /etc/netd.cf
+#
+cp /usr/admin/menu/packagemgmt/tcpipmgmt/hbtcpmgmt/_netd.cf /etc/netd.cf
+chmod  755 /etc/netd.cf
+ed - /etc/netd.cf > /dev/null <<-EOF
+	g/DEV/s//$DNAME/g
+	g/local_site_name/s//$LOCNAME/
+	w
+	q
+	EOF
+
+if checkyn ${flags} -f "Do you wish to build a new kernel at this time?"
+then
+	sh runlevel
+	/etc/kconfig  -r /
+fi
+
+/bin/rm -f ${TEMPF} ${TEMPSDEV} $T1
+exit 0
